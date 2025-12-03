@@ -1,7 +1,7 @@
 package tracer
 
 import (
-	"github.com/go-lynx/lynx/plugins/tracer/conf"
+	"github.com/go-lynx/lynx-tracer/conf"
 	"go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/contrib/propagators/jaeger"
 	"go.opentelemetry.io/otel/propagation"

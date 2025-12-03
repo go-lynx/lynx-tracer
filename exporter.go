@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-lynx/lynx/plugins/tracer/conf"
+	"github.com/go-lynx/lynx-tracer/conf"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	traceSdk "go.opentelemetry.io/otel/sdk/trace"

@@ -3,7 +3,7 @@ package tracer
 import (
 	"testing"
 
-	"github.com/go-lynx/lynx/plugins/tracer/conf"
+	"github.com/go-lynx/lynx-tracer/conf"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/durationpb"
 )

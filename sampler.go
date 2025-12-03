@@ -1,7 +1,7 @@
 package tracer
 
 import (
-	"github.com/go-lynx/lynx/plugins/tracer/conf"
+	"github.com/go-lynx/lynx-tracer/conf"
 	traceSdk "go.opentelemetry.io/otel/sdk/trace"
 )
 
