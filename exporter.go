@@ -189,55 +189,18 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 			opts = append(opts, otlptracegrpc.WithRetry(rc))
 		}
 
-		// Connection management configuration
+		// Connection management and load balancing: use a single merged service config so one does not override the other
 		if conn := cfg.GetConnection(); conn != nil {
-			// Set reconnection period
 			if rp := conn.GetReconnectionPeriod(); rp != nil {
 				opts = append(opts, otlptracegrpc.WithReconnectionPeriod(rp.AsDuration()))
 			}
-
-			// Set connection timeout and other connection options via dial options
-			var dialOpts []grpc.DialOption
-
-			// Connection timeout is now handled via context in exporter creation
-
-			// Connection pool settings
-			if conn.GetMaxConnIdleTime() != nil || conn.GetMaxConnAge() != nil || conn.GetMaxConnAgeGrace() != nil {
-				// Build service config for connection pool management
-				serviceConfig := buildConnectionPoolServiceConfig(conn)
-				if serviceConfig != "" {
-					dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(serviceConfig))
-				}
-			}
-
-			// Apply dial options if any
-			if len(dialOpts) > 0 {
-				opts = append(opts, otlptracegrpc.WithDialOption(dialOpts...))
-			}
 		} else {
-			// Set default reconnection period if not configured
 			opts = append(opts, otlptracegrpc.WithReconnectionPeriod(5*time.Second))
 		}
 
-		// Load balancing configuration
-		if lb := cfg.GetLoadBalancing(); lb != nil {
-			var dialOpts []grpc.DialOption
-
-			// Build service config for load balancing
-			serviceConfig := buildLoadBalancingServiceConfig(lb)
-			if serviceConfig != "" {
-				dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(serviceConfig))
-			}
-
-			// Apply load balancing dial options
-			if len(dialOpts) > 0 {
-				opts = append(opts, otlptracegrpc.WithDialOption(dialOpts...))
-			}
-		} else {
-			// Add default load balancing support
-			opts = append(opts, otlptracegrpc.WithDialOption(
-				grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`),
-			))
+		mergedServiceConfig := buildMergedGRPCServiceConfig(cfg)
+		if mergedServiceConfig != "" {
+			opts = append(opts, otlptracegrpc.WithDialOption(grpc.WithDefaultServiceConfig(mergedServiceConfig)))
 		}
 
 		// Compression (gzip)
@@ -409,4 +372,60 @@ func buildLoadBalancingServiceConfig(lb *conf.LoadBalancing) string {
 
 	serviceConfig.WriteString("}")
 	return serviceConfig.String()
+}
+
+// buildMergedGRPCServiceConfig builds a single gRPC service config merging load balancing and connection pool
+// so that one WithDefaultServiceConfig does not override the other (later dial option would win otherwise).
+func buildMergedGRPCServiceConfig(cfg *conf.Config) string {
+	conn := cfg.GetConnection()
+	hasPool := conn != nil && (conn.GetMaxConnIdleTime() != nil || conn.GetMaxConnAge() != nil || conn.GetMaxConnAgeGrace() != nil)
+	hasLB := cfg.GetLoadBalancing() != nil
+
+	if hasLB && hasPool {
+		return buildMergedGRPCServiceConfigFromScratch(cfg)
+	}
+	if hasLB {
+		return buildLoadBalancingServiceConfig(cfg.GetLoadBalancing())
+	}
+	if hasPool {
+		return buildConnectionPoolServiceConfig(conn)
+	}
+	return `{"loadBalancingPolicy":"round_robin"}`
+}
+
+// buildMergedGRPCServiceConfigFromScratch builds one JSON when both load balancing and connection pool are set.
+func buildMergedGRPCServiceConfigFromScratch(cfg *conf.Config) string {
+	var b strings.Builder
+	lb := cfg.GetLoadBalancing()
+	conn := cfg.GetConnection()
+	if lb != nil {
+		switch lb.GetPolicy() {
+		case "round_robin":
+			b.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+		case "pick_first":
+			b.WriteString(`{"loadBalancingConfig": [{"pickFirst": {}}]`)
+		case "least_conn":
+			b.WriteString(`{"loadBalancingConfig": [{"leastConn": {}}]`)
+		default:
+			b.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+		}
+		if lb.GetHealthCheck() {
+			b.WriteString(`,"healthCheckConfig": {"serviceName": "grpc.health.v1.Health"}`)
+		}
+	} else {
+		b.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+	}
+	if conn != nil {
+		if conn.GetMaxConnIdleTime() != nil {
+			b.WriteString(fmt.Sprintf(`,"maxConnIdleTime":%d`, int(conn.GetMaxConnIdleTime().AsDuration().Seconds())))
+		}
+		if conn.GetMaxConnAge() != nil {
+			b.WriteString(fmt.Sprintf(`,"maxConnAge":%d`, int(conn.GetMaxConnAge().AsDuration().Seconds())))
+		}
+		if conn.GetMaxConnAgeGrace() != nil {
+			b.WriteString(fmt.Sprintf(`,"maxConnAgeGrace":%d`, int(conn.GetMaxConnAgeGrace().AsDuration().Seconds())))
+		}
+	}
+	b.WriteString("}")
+	return b.String()
 }
