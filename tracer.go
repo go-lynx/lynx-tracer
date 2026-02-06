@@ -3,6 +3,7 @@ package tracer
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/go-lynx/lynx-tracer/conf"
@@ -35,6 +36,8 @@ type PlugTracer struct {
 	*plugins.BasePlugin
 	// Tracer configuration information (supports modular configuration and backward-compatible old fields)
 	conf *conf.Tracer
+	// tp holds the TracerProvider created by this plugin; used for shutdown to avoid closing a different provider set elsewhere.
+	tp *trace.TracerProvider
 }
 
 // NewPlugTracer creates a new Tracer plugin instance.
@@ -121,16 +124,13 @@ func (t *PlugTracer) validateConfigFields() error {
 		if cfg.Batch.GetMaxBatchSize() < 0 {
 			return fmt.Errorf("batch max_batch_size must be non-negative")
 		}
-		// Validate batch size vs queue size relationship
+		// Validate batch size vs queue size relationship when both are set
 		if cfg.Batch.GetMaxBatchSize() > 0 && cfg.Batch.GetMaxQueueSize() > 0 {
 			if cfg.Batch.GetMaxBatchSize() > cfg.Batch.GetMaxQueueSize() {
 				return fmt.Errorf("batch max_batch_size cannot exceed max_queue_size")
 			}
 		}
-		// Validate that at least one of the batch limits is set
-		if cfg.Batch.GetMaxQueueSize() == 0 && cfg.Batch.GetMaxBatchSize() == 0 {
-			return fmt.Errorf("batch processing enabled but no limits configured (max_queue_size or max_batch_size must be set)")
-		}
+		// When both are 0, buildExporter will apply SDK defaults (max_queue_size=2048, max_batch_size=512)
 	}
 
 	// Validate retry configuration
@@ -229,7 +229,7 @@ func (t *PlugTracer) validateLoadBalancingConfig(lb *conf.LoadBalancing) error {
 
 // setDefaultValues sets default values for unconfigured items:
 // - addr defaults to localhost:4317 (OTLP/gRPC default port)
-// - ratio defaults to 1.0 (full sampling)
+// - ratio defaults to 1.0 when unset (full sampling); to disable sampling use config.sampler type ALWAYS_OFF
 func (t *PlugTracer) setDefaultValues() {
 	if t.conf.Addr == "" {
 		t.conf.Addr = "localhost:4317"
@@ -279,6 +279,10 @@ func (t *PlugTracer) StartupTasks() error {
 		} else {
 			tracerProviderOptions = append(tracerProviderOptions, trace.WithSyncer(exp))
 		}
+		// Optional startup health check: warn if collector is unreachable (no config flag, best-effort)
+		if err := probeCollectorReachable(t.conf.Addr, 2*time.Second); err != nil {
+			log.Warnf("Tracer exporter target may be unreachable: %v (traces will still be generated)", err)
+		}
 	}
 
 	// Create a new trace provider for generating and processing trace data
@@ -286,6 +290,9 @@ func (t *PlugTracer) StartupTasks() error {
 
 	// Set global trace provider for subsequent trace data generation and processing
 	otel.SetTracerProvider(tp)
+
+	// Hold our own reference so ShutdownTasks always shuts down this provider, not a replacement
+	t.tp = tp
 
 	// Propagators
 	var propagator propagation.TextMapPropagator = buildPropagator(t.conf)
@@ -301,33 +308,38 @@ func (t *PlugTracer) StartupTasks() error {
 	return nil
 }
 
-// ShutdownTasks gracefully shuts down TracerProvider:
-// - Call SDK's Shutdown within 30s timeout
-// - Catch and log errors
-func (t *PlugTracer) ShutdownTasks() error {
-	// Get global TracerProvider
-	tp := otel.GetTracerProvider()
-	if tp != nil {
-		// Check if it's SDK TracerProvider
-		if sdkTp, ok := tp.(*trace.TracerProvider); ok {
-			// Create context with timeout for graceful shutdown
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			// Try to flush buffered spans before shutdown to reduce data loss
-			if err := sdkTp.ForceFlush(ctx); err != nil {
-				log.Errorf("Failed to force flush tracer provider: %v", err)
-			}
-
-			// Gracefully shutdown TracerProvider
-			if err := sdkTp.Shutdown(ctx); err != nil {
-				log.Errorf("Failed to shutdown tracer provider: %v", err)
-				return fmt.Errorf("failed to shutdown tracer provider: %w", err)
-			}
-
-			log.Infof("Tracer provider shutdown successfully")
-		}
+// probeCollectorReachable performs a best-effort TCP dial to the OTLP endpoint.
+// Used for optional startup health check; returns an error if the address is unreachable.
+func probeCollectorReachable(addr string, timeout time.Duration) error {
+	if addr == "" {
+		return nil
 	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", addr, err)
+	}
+	_ = conn.Close()
+	return nil
+}
 
+// ShutdownTasks gracefully shuts down the TracerProvider created by this plugin:
+// - Uses the provider reference held by this plugin (not the global one) to avoid closing a replacement
+// - Call SDK's Shutdown within 30s timeout; catch and log errors
+func (t *PlugTracer) ShutdownTasks() error {
+	if t.tp == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := t.tp.ForceFlush(ctx); err != nil {
+		log.Errorf("Failed to force flush tracer provider: %v", err)
+	}
+	if err := t.tp.Shutdown(ctx); err != nil {
+		log.Errorf("Failed to shutdown tracer provider: %v", err)
+		return fmt.Errorf("failed to shutdown tracer provider: %w", err)
+	}
+	log.Infof("Tracer provider shutdown successfully")
+	t.tp = nil
 	return nil
 }

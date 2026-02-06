@@ -74,25 +74,26 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 		return nil, nil, false, fmt.Errorf("address validation failed: %w", addrErr)
 	}
 
-	// Batch processing options
+	// Batch processing options; when enabled but queue/batch size unset, use SDK defaults for robustness
+	const defaultBatchMaxQueueSize = 2048
+	const defaultBatchMaxBatchSize = 512
 	if cfg.Batch != nil && cfg.Batch.GetEnabled() {
-		// Enable batch processing
 		useBatch = true
-		// Maximum queue length: determines the queue capacity for spans to be exported
 		if v := cfg.Batch.GetMaxQueueSize(); v > 0 {
 			batchOpts = append(batchOpts, traceSdk.WithMaxQueueSize(int(v)))
+		} else {
+			batchOpts = append(batchOpts, traceSdk.WithMaxQueueSize(defaultBatchMaxQueueSize))
 		}
-		// Scheduling delay: time interval for batch processor to trigger export periodically
 		if d := cfg.Batch.GetScheduledDelay(); d != nil {
 			batchOpts = append(batchOpts, traceSdk.WithBatchTimeout(d.AsDuration()))
 		}
-		// Export timeout: timeout for single batch export
 		if d := cfg.Batch.GetExportTimeout(); d != nil {
 			batchOpts = append(batchOpts, traceSdk.WithExportTimeout(d.AsDuration()))
 		}
-		// Maximum export batch size: maximum number of spans per flush
 		if v := cfg.Batch.GetMaxBatchSize(); v > 0 {
 			batchOpts = append(batchOpts, traceSdk.WithMaxExportBatchSize(int(v)))
+		} else {
+			batchOpts = append(batchOpts, traceSdk.WithMaxExportBatchSize(defaultBatchMaxBatchSize))
 		}
 	}
 
@@ -245,7 +246,8 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 			opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
 		}
 
-		// Initialize gRPC exporter with connection timeout if configured
+		// Initialize gRPC exporter. The context is used only for the initial connection/dial timeout
+		// (see otel otlptracegrpc); we cancel it after New returns to release resources.
 		exporterCtx := ctx
 		var cancel context.CancelFunc
 		if conn := cfg.GetConnection(); conn != nil {

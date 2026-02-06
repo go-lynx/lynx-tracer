@@ -13,6 +13,20 @@ Lynx distributed tracing plugin, implementing distributed tracing functionality 
 - ✅ Samplers: AlwaysOn/AlwaysOff/TraceIDRatio/ParentBased-TraceIDRatio
 - ✅ Resources and limits: service.name/attributes and SpanLimits (attributes/events/links/length)
 - ✅ Graceful shutdown and resource cleanup
+- ✅ Optional startup health check: best-effort TCP dial to collector; logs a warning if unreachable (traces still work)
+
+### Export reliability
+
+- **OTLP gRPC**: Supports configurable retry (initial/max interval, max attempts). Prefer gRPC in production for better resilience when the collector is temporarily unavailable.
+- **OTLP HTTP**: Retry is not configured in this plugin; ensure the collector is highly available or use OTLP gRPC for critical deployments.
+
+### Sampling
+
+- Top-level `ratio` defaults to **1.0** when unset (full sampling). To **disable sampling**, use `config.sampler` with type `ALWAYS_OFF` (the legacy `ratio: 0` is not used for "no sampling" because unset ratio is also 0 and is normalized to 1.0).
+
+### Batch defaults
+
+- When `config.batch.enabled: true` and you do not set `max_queue_size` or `max_batch_size`, the plugin uses SDK defaults (max_queue_size=2048, max_batch_size=512).
 
 ## Quick Start
 
