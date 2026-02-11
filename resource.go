@@ -25,8 +25,8 @@ func buildResource(c *conf.Tracer) *resource.Resource {
 	}
 
 	// Safely get namespace from control plane
-	if lynx := lynx.Lynx(); lynx != nil {
-		if cp := lynx.GetControlPlane(); cp != nil {
+	if lynxApp := lynx.Lynx(); lynxApp != nil {
+		if cp := lynxApp.GetControlPlane(); cp != nil {
 			attrs = append(attrs, semconv.ServiceNamespaceKey.String(cp.GetNamespace()))
 		}
 	}
