@@ -19,10 +19,11 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-// validateAddress validates the address format for OTLP endpoints
+// validateAddress validates the address format for OTLP endpoints.
+// Special value "None" is allowed and means no exporter (trace context only, no export).
 func validateAddress(addr string) error {
-	if addr == "" {
-		return nil // Empty address is valid (will use defaults)
+	if addr == "" || addr == "None" {
+		return nil // Empty or "None" is valid
 	}
 
 	// Check if it's a valid host:port format

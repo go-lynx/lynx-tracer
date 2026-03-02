@@ -28,6 +28,10 @@ Lynx distributed tracing plugin, implementing distributed tracing functionality 
 
 - When `config.batch.enabled: true` and you do not set `max_queue_size` or `max_batch_size`, the plugin uses SDK defaults (max_queue_size=2048, max_batch_size=512).
 
+### Special address value: `None`
+
+- When `addr` is set to `"None"` (case-sensitive), the plugin initializes TracerProvider with context propagation (traceparent, baggage, etc.) but **does not export** traces to any collector. Useful when you need trace context for logging/correlation without running a collector (e.g., local development or when collector is unavailable).
+
 ## Quick Start
 
 ### 1. Minimal Configuration (gRPC, recommended)

@@ -60,6 +60,24 @@ func TestPlugTracer_ValidateConfiguration(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid configuration with addr None (no export)",
+			config: &conf.Tracer{
+				Enable: true,
+				Addr:   "None",
+				Ratio:  0.5,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid address format",
+			config: &conf.Tracer{
+				Enable: true,
+				Addr:   "invalid-no-colon",
+				Ratio:  0.5,
+			},
+			wantErr: true,
+		},
+		{
 			name: "valid configuration with nested config",
 			config: &conf.Tracer{
 				Enable: true,
@@ -188,7 +206,7 @@ func TestPlugTracer_ValidateConfigFields(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "invalid batch config - no limits configured",
+			name: "valid batch config - zero values use SDK defaults",
 			config: &conf.Config{
 				Batch: &conf.Batch{
 					Enabled:      true,
@@ -196,7 +214,7 @@ func TestPlugTracer_ValidateConfigFields(t *testing.T) {
 					MaxBatchSize: 0,
 				},
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "valid retry config",

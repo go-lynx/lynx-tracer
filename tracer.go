@@ -101,6 +101,12 @@ func (t *PlugTracer) validateConfiguration() error {
 	if t.conf.Enable && t.conf.Addr == "" {
 		return fmt.Errorf("tracer address is required when tracing is enabled")
 	}
+	// Validate address format when addr is set and not the special "None" (no-export) value
+	if t.conf.Enable && t.conf.Addr != "" && t.conf.Addr != "None" {
+		if err := validateAddress(t.conf.Addr); err != nil {
+			return fmt.Errorf("tracer address validation failed: %w", err)
+		}
+	}
 
 	// Additional validation for config fields when present
 	if t.conf.Config != nil {
