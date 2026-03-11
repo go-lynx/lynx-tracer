@@ -297,7 +297,7 @@ func (t *PlugTracer) StartupTasks() error {
 	// Set global trace provider for subsequent trace data generation and processing
 	otel.SetTracerProvider(tp)
 
-	// Hold our own reference so ShutdownTasks always shuts down this provider, not a replacement
+	// Hold our own reference so CleanupTasks always shuts down this provider, not a replacement
 	t.tp = tp
 
 	// Propagators
@@ -328,10 +328,9 @@ func probeCollectorReachable(addr string, timeout time.Duration) error {
 	return nil
 }
 
-// ShutdownTasks gracefully shuts down the TracerProvider created by this plugin:
-// - Uses the provider reference held by this plugin (not the global one) to avoid closing a replacement
-// - Call SDK's Shutdown within 30s timeout; catch and log errors
-func (t *PlugTracer) ShutdownTasks() error {
+// CleanupTasks gracefully shuts down the TracerProvider created by this plugin.
+// Called by the framework during plugin Stop; flushes pending spans and releases the exporter connection.
+func (t *PlugTracer) CleanupTasks() error {
 	if t.tp == nil {
 		return nil
 	}

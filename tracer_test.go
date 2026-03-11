@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-lynx/lynx-tracer/conf"
 	"github.com/stretchr/testify/assert"
+	"go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -449,4 +450,36 @@ func TestNewPlugTracer(t *testing.T) {
 	assert.NotNil(t, tracer)
 	assert.NotNil(t, tracer.BasePlugin)
 	assert.NotNil(t, tracer.conf)
+}
+
+func TestPlugTracer_CleanupTasks_NilProvider(t *testing.T) {
+	tracer := NewPlugTracer()
+	// tp is nil by default — CleanupTasks should be a safe no-op
+	err := tracer.CleanupTasks()
+	assert.NoError(t, err)
+	assert.Nil(t, tracer.tp)
+}
+
+func TestPlugTracer_CleanupTasks_WithProvider(t *testing.T) {
+	tracer := NewPlugTracer()
+
+	// Create a minimal TracerProvider (no exporter — nothing to connect to)
+	tp := trace.NewTracerProvider()
+	tracer.tp = tp
+
+	err := tracer.CleanupTasks()
+	assert.NoError(t, err)
+	assert.Nil(t, tracer.tp, "tp should be set to nil after CleanupTasks")
+}
+
+func TestPlugTracer_CleanupTasks_Idempotent(t *testing.T) {
+	tracer := NewPlugTracer()
+	tp := trace.NewTracerProvider()
+	tracer.tp = tp
+
+	assert.NoError(t, tracer.CleanupTasks())
+	assert.Nil(t, tracer.tp)
+
+	// Second call should be safe
+	assert.NoError(t, tracer.CleanupTasks())
 }
