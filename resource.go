@@ -1,7 +1,6 @@
 package tracer
 
 import (
-	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx-tracer/conf"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -9,7 +8,7 @@ import (
 )
 
 // buildResource builds OpenTelemetry Resource based on Tracer configuration and Lynx application metadata:
-// - service.name prefers resource.service_name from config, otherwise falls back to lynx.GetName()
+// - service.name prefers resource.service_name from config, otherwise falls back to the current Lynx app name.
 // - Default injection: service.instance.id, service.version, service.namespace
 // - Supports additional custom attributes (string key-value pairs)
 // Note: Uses Schemaless construction for flexible extension.
@@ -20,19 +19,19 @@ func buildResource(c *conf.Tracer) *resource.Resource {
 	}
 
 	attrs := []attribute.KeyValue{
-		semconv.ServiceInstanceIDKey.String(lynx.GetHost()),
-		semconv.ServiceVersionKey.String(lynx.GetVersion()),
+		semconv.ServiceInstanceIDKey.String(currentLynxHost()),
+		semconv.ServiceVersionKey.String(currentLynxVersion()),
 	}
 
 	// Safely get namespace from control plane
-	if lynxApp := lynx.Lynx(); lynxApp != nil {
+	if lynxApp := currentLynxApp(); lynxApp != nil {
 		if cp := lynxApp.GetControlPlane(); cp != nil {
 			attrs = append(attrs, semconv.ServiceNamespaceKey.String(cp.GetNamespace()))
 		}
 	}
 
 	// service.name: prefer config override, with validation
-	serviceName := lynx.GetName()
+	serviceName := currentLynxName()
 	if r != nil && r.GetServiceName() != "" {
 		serviceName = r.GetServiceName()
 	}
