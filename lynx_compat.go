@@ -7,22 +7,13 @@ func currentLynxApp() *lynx.LynxApp {
 }
 
 func currentLynxName() string {
-	if app := currentLynxApp(); app != nil {
-		return app.Name()
-	}
-	return ""
+	return lynx.GetName()
 }
 
 func currentLynxHost() string {
-	if app := currentLynxApp(); app != nil {
-		return app.Host()
-	}
-	return ""
+	return lynx.GetHost()
 }
 
 func currentLynxVersion() string {
-	if app := currentLynxApp(); app != nil {
-		return app.Version()
-	}
-	return ""
+	return lynx.GetVersion()
 }
