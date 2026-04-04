@@ -36,8 +36,12 @@ type PlugTracer struct {
 	*plugins.BasePlugin
 	// Tracer configuration information (supports modular configuration and backward-compatible old fields)
 	conf *conf.Tracer
+	// Runtime handle for publishing lifecycle contract resources.
+	rt plugins.Runtime
 	// tp holds the TracerProvider created by this plugin; used for shutdown to avoid closing a different provider set elsewhere.
 	tp *trace.TracerProvider
+	// propagator keeps the installed text map propagator available as a runtime resource.
+	propagator propagation.TextMapPropagator
 }
 
 // NewPlugTracer creates a new Tracer plugin instance.
@@ -67,6 +71,10 @@ func NewPlugTracer() *PlugTracer {
 // - Validate necessary parameters (sampling ratio range, enabled but unconfigured address, etc.)
 // - Set reasonable default values (addr, ratio)
 func (t *PlugTracer) InitializeResources(rt plugins.Runtime) error {
+	if err := t.BasePlugin.InitializeResources(rt); err != nil {
+		return err
+	}
+	t.rt = rt
 	// Initialize an empty configuration structure
 	t.conf = &conf.Tracer{}
 
@@ -234,15 +242,26 @@ func (t *PlugTracer) validateLoadBalancingConfig(lb *conf.LoadBalancing) error {
 }
 
 // setDefaultValues sets default values for unconfigured items:
-// - addr defaults to localhost:4317 (OTLP/gRPC default port)
-// - ratio defaults to 1.0 when unset (full sampling); to disable sampling use config.sampler type ALWAYS_OFF
+//   - addr defaults to localhost:4317 (OTLP/gRPC default port)
+//   - legacy top-level ratio uses historical zero-value normalization; use config.sampler type ALWAYS_OFF
+//     when you need deterministic sampling disable semantics.
 func (t *PlugTracer) setDefaultValues() {
 	if t.conf.Addr == "" {
 		t.conf.Addr = "localhost:4317"
 	}
-	if t.conf.Ratio == 0 {
-		t.conf.Ratio = 1.0
+	t.conf.Ratio = normalizeLegacyRatio(t.conf.Ratio)
+}
+
+// normalizeLegacyRatio preserves the historical top-level ratio defaulting behavior.
+// The legacy proto3 scalar does not carry field presence, so "unset" and explicit 0 collapse
+// to the same value. To avoid silently changing that long-standing default to "drop all spans",
+// the runtime keeps zero normalized to full sampling. Use config.sampler.type ALWAYS_OFF for
+// explicit sampling disable semantics.
+func normalizeLegacyRatio(ratio float32) float32 {
+	if ratio == 0 {
+		return 1.0
 	}
+	return ratio
 }
 
 // StartupTasks completes OpenTelemetry TracerProvider initialization:
@@ -251,9 +270,33 @@ func (t *PlugTracer) setDefaultValues() {
 // - Set global TracerProvider and TextMapPropagator
 // - Print initialization logs
 func (t *PlugTracer) StartupTasks() error {
+	return t.startupWithContext(context.Background())
+}
+
+func (t *PlugTracer) startupWithContext(ctx context.Context) error {
+	if t.conf == nil {
+		return fmt.Errorf("tracer configuration is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("tracer startup canceled before execution: %w", err)
+	}
+
+	if t.rt != nil {
+		if err := t.rt.RegisterSharedResource(pluginName, t); err != nil {
+			t.publishRuntimeContract(false, false)
+			return fmt.Errorf("failed to register tracer shared resource: %w", err)
+		}
+		t.registerRuntimePluginAlias()
+		if err := t.rt.RegisterPrivateResource("config", t.conf); err != nil {
+			log.Warnf("failed to register tracer private config resource: %v", err)
+		}
+	}
+
 	if !t.conf.Enable {
+		t.publishRuntimeContract(false, true)
 		return nil
 	}
+	t.publishRuntimeContract(false, false)
 
 	// Use Lynx application Helper to log, indicating that tracing component is being initialized
 	log.Infof("Initializing tracing component")
@@ -276,8 +319,9 @@ func (t *PlugTracer) StartupTasks() error {
 	// If address is specified in configuration, set exporter
 	// Otherwise, don't set exporter
 	if t.conf.GetAddr() != "None" {
-		exp, batchOpts, useBatch, err := buildExporter(context.Background(), t.conf)
+		exp, batchOpts, useBatch, err := buildExporter(ctx, t.conf)
 		if err != nil {
+			t.publishRuntimeContract(false, false)
 			return fmt.Errorf("failed to create OTLP exporter: %w", err)
 		}
 		if useBatch {
@@ -301,13 +345,31 @@ func (t *PlugTracer) StartupTasks() error {
 	t.tp = tp
 
 	// Propagators
-	var propagator propagation.TextMapPropagator = buildPropagator(t.conf)
-	otel.SetTextMapPropagator(propagator)
+	t.propagator = buildPropagator(t.conf)
+	otel.SetTextMapPropagator(t.propagator)
 
 	// Verify that TracerProvider was successfully created
 	if tp == nil {
+		t.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to create tracer provider")
 	}
+
+	if t.rt != nil {
+		if err := t.rt.RegisterPrivateResource("tracer_provider", t.tp); err != nil {
+			log.Warnf("failed to register tracer private provider resource: %v", err)
+		}
+		if t.propagator != nil {
+			if err := t.rt.RegisterPrivateResource("propagator", t.propagator); err != nil {
+				log.Warnf("failed to register tracer private propagator resource: %v", err)
+			}
+		}
+	}
+
+	if err := t.CheckHealth(); err != nil {
+		t.publishRuntimeContract(false, false)
+		return err
+	}
+	t.publishRuntimeContract(true, true)
 
 	// Use Lynx application Helper to log, indicating that tracing component initialization was successful
 	log.Infof("Tracing component successfully initialized")
@@ -331,12 +393,27 @@ func probeCollectorReachable(addr string, timeout time.Duration) error {
 // CleanupTasks gracefully shuts down the TracerProvider created by this plugin.
 // Called by the framework during plugin Stop; flushes pending spans and releases the exporter connection.
 func (t *PlugTracer) CleanupTasks() error {
+	return t.cleanupWithContext(context.Background())
+}
+
+func (t *PlugTracer) cleanupWithContext(parentCtx context.Context) error {
 	if t.tp == nil {
+		t.publishRuntimeContract(false, false)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	if err := parentCtx.Err(); err != nil {
+		return fmt.Errorf("tracer cleanup canceled before execution: %w", err)
+	}
+
+	ctx := parentCtx
+	cancel := func() {}
+	if _, ok := parentCtx.Deadline(); !ok {
+		ctx, cancel = context.WithTimeout(parentCtx, 30*time.Second)
+	}
 	defer cancel()
 
+	t.publishRuntimeContract(false, false)
 	if err := t.tp.ForceFlush(ctx); err != nil {
 		log.Errorf("Failed to force flush tracer provider: %v", err)
 	}
@@ -346,5 +423,6 @@ func (t *PlugTracer) CleanupTasks() error {
 	}
 	log.Infof("Tracer provider shutdown successfully")
 	t.tp = nil
+	t.propagator = nil
 	return nil
 }

@@ -444,6 +444,31 @@ func TestPlugTracer_SetDefaultValues(t *testing.T) {
 	}
 }
 
+func TestNormalizeLegacyRatio(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    float32
+		expected float32
+	}{
+		{
+			name:     "zero keeps historical normalization",
+			input:    0,
+			expected: 1.0,
+		},
+		{
+			name:     "non-zero ratio preserved",
+			input:    0.25,
+			expected: 0.25,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, normalizeLegacyRatio(tt.input))
+		})
+	}
+}
+
 func TestNewPlugTracer(t *testing.T) {
 	tracer := NewPlugTracer()
 

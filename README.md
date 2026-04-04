@@ -2,6 +2,8 @@
 
 `lynx-tracer` installs a Lynx runtime plugin that configures the global OpenTelemetry `TracerProvider` and propagators.
 
+> Production note: the legacy top-level `ratio` field is not a reliable "turn tracing off" switch. In the current runtime, `ratio: 0` is still normalized to `1.0` because the legacy proto3 scalar cannot distinguish "unset" from explicit zero. If you need tracing fully disabled while the plugin remains enabled, set `lynx.tracer.config.sampler.type: ALWAYS_OFF`.
+
 ## Runtime facts
 
 - Go module: `github.com/go-lynx/lynx-tracer`
@@ -21,7 +23,7 @@ Important runtime notes:
 - valid propagator values include `W3C_TRACE_CONTEXT`, `W3C_BAGGAGE`, `B3`, `B3_MULTI`, and `JAEGER`
 - `addr: "None"` enables tracing and propagation without creating an exporter
 - top-level `ratio` is a legacy fallback; prefer `config.sampler`
-- `ratio: 0` is normalized to `1.0`, so use `config.sampler.type: ALWAYS_OFF` if you want no sampling
+- `ratio: 0` is still normalized to `1.0`, so use `config.sampler.type: ALWAYS_OFF` if you want no sampling
 - `config.retry`, `config.connection`, and `config.load_balancing` apply only to the OTLP gRPC exporter
 - the batch processor delay field is `scheduled_delay`, not `batch_timeout`
 
@@ -67,3 +69,4 @@ func traceWork() {
 - Prefer OTLP gRPC in production when you need retry and connection-management controls.
 - For OTLP HTTP, use `config.http_path` and do not expect `config.retry` or `config.connection` to change exporter behavior.
 - If you configure `config.batch.enabled: true` and omit queue or batch size, the plugin falls back to the OpenTelemetry SDK defaults.
+- If you need the plugin enabled but want zero sampling, set `config.sampler.type: ALWAYS_OFF`. Do not rely on top-level `ratio: 0`.
