@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-lynx/lynx-tracer/conf"
+	"github.com/go-lynx/lynx/pkg/security"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	traceSdk "go.opentelemetry.io/otel/sdk/trace"
@@ -265,6 +266,9 @@ func buildTLSCredentials(cfg *conf.Config) (*otlptracegrpc.Option, error) {
 	tlsCfg := cfg.GetTls()
 	if tlsCfg == nil {
 		return nil, nil
+	}
+	if err := security.ValidateTLSProductionPolicy("tracer", true, tlsCfg.GetInsecureSkipVerify()); err != nil {
+		return nil, err
 	}
 
 	// CA
