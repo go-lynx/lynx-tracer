@@ -1,3 +1,9 @@
+// Package tracer implements an OpenTelemetry distributed tracing plugin for the Lynx framework.
+// It manages the full lifecycle of an OTLP-based TracerProvider, including gRPC/HTTP exporter
+// construction, sampler configuration, resource attribution, and graceful shutdown with span flushing.
+// Prometheus metrics for the plugin's own health (initialization state, startup/shutdown counters,
+// and health check outcomes) are exposed via MetricsGatherer so the framework can merge them
+// into the shared /metrics endpoint.
 package tracer
 
 import (
@@ -9,6 +15,7 @@ import (
 	"github.com/go-lynx/lynx-tracer/conf"
 	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -42,6 +49,8 @@ type PlugTracer struct {
 	tp *trace.TracerProvider
 	// propagator keeps the installed text map propagator available as a runtime resource.
 	propagator propagation.TextMapPropagator
+	// metrics exposes Prometheus counters and gauges for this plugin's own lifecycle health.
+	metrics *TracerMetrics
 }
 
 // NewPlugTracer creates a new Tracer plugin instance.
@@ -62,7 +71,8 @@ func NewPlugTracer() *PlugTracer {
 			// Weight
 			9999,
 		),
-		conf: &conf.Tracer{},
+		conf:    &conf.Tracer{},
+		metrics: newTracerMetrics(),
 	}
 }
 
@@ -275,15 +285,18 @@ func (t *PlugTracer) StartupTasks() error {
 
 func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 	if t.conf == nil {
+		t.metrics.recordStartup(fmt.Errorf("configuration nil"))
 		return fmt.Errorf("tracer configuration is nil")
 	}
 	if err := ctx.Err(); err != nil {
+		t.metrics.recordStartup(err)
 		return fmt.Errorf("tracer startup canceled before execution: %w", err)
 	}
 
 	if t.rt != nil {
 		if err := t.rt.RegisterSharedResource(pluginName, t); err != nil {
 			t.publishRuntimeContract(false, false)
+			t.metrics.recordStartup(err)
 			return fmt.Errorf("failed to register tracer shared resource: %w", err)
 		}
 		t.registerRuntimePluginAlias()
@@ -294,6 +307,8 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 
 	if !t.conf.Enable {
 		t.publishRuntimeContract(false, true)
+		t.metrics.setInitialized(false)
+		t.metrics.recordStartup(nil)
 		return nil
 	}
 	t.publishRuntimeContract(false, false)
@@ -313,8 +328,10 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 
 	// Span limits
 	if limits := buildSpanLimits(t.conf); limits != nil {
-		tracerProviderOptions = append(tracerProviderOptions, trace.WithSpanLimits(*limits))
+		tracerProviderOptions = append(tracerProviderOptions, trace.WithRawSpanLimits(*limits))
 	}
+
+	t.metrics.setSamplingRatio(t.conf.GetRatio())
 
 	// If address is specified in configuration, set exporter
 	// Otherwise, don't set exporter
@@ -322,6 +339,7 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 		exp, batchOpts, useBatch, err := buildExporter(ctx, t.conf)
 		if err != nil {
 			t.publishRuntimeContract(false, false)
+			t.metrics.recordStartup(err)
 			return fmt.Errorf("failed to create OTLP exporter: %w", err)
 		}
 		if useBatch {
@@ -367,13 +385,28 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 
 	if err := t.CheckHealth(); err != nil {
 		t.publishRuntimeContract(false, false)
+		t.metrics.recordHealthCheck(false)
+		t.metrics.recordStartup(err)
 		return err
 	}
 	t.publishRuntimeContract(true, true)
+	t.metrics.recordHealthCheck(true)
+	t.metrics.setInitialized(true)
+	t.metrics.recordStartup(nil)
 
 	// Use Lynx application Helper to log, indicating that tracing component initialization was successful
 	log.Infof("Tracing component successfully initialized")
 	return nil
+}
+
+// MetricsGatherer returns the Prometheus Gatherer for this plugin's own lifecycle metrics.
+// Implements the metricsGathererProvider interface so the Lynx framework can include these
+// metrics in the shared /metrics endpoint alongside all other plugin metrics.
+func (t *PlugTracer) MetricsGatherer() prometheus.Gatherer {
+	if t.metrics == nil {
+		return nil
+	}
+	return t.metrics.GetGatherer()
 }
 
 // probeCollectorReachable performs a best-effort TCP dial to the OTLP endpoint.
@@ -399,10 +432,12 @@ func (t *PlugTracer) CleanupTasks() error {
 func (t *PlugTracer) cleanupWithContext(parentCtx context.Context) error {
 	if t.tp == nil {
 		t.publishRuntimeContract(false, false)
+		t.metrics.setInitialized(false)
 		return nil
 	}
 
 	if err := parentCtx.Err(); err != nil {
+		t.metrics.recordShutdown(err)
 		return fmt.Errorf("tracer cleanup canceled before execution: %w", err)
 	}
 
@@ -419,10 +454,13 @@ func (t *PlugTracer) cleanupWithContext(parentCtx context.Context) error {
 	}
 	if err := t.tp.Shutdown(ctx); err != nil {
 		log.Errorf("Failed to shutdown tracer provider: %v", err)
+		t.metrics.recordShutdown(err)
 		return fmt.Errorf("failed to shutdown tracer provider: %w", err)
 	}
 	log.Infof("Tracer provider shutdown successfully")
 	t.tp = nil
 	t.propagator = nil
+	t.metrics.setInitialized(false)
+	t.metrics.recordShutdown(nil)
 	return nil
 }
