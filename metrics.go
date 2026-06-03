@@ -29,6 +29,10 @@ type TracerMetrics struct {
 
 	// samplingRatio exposes the configured sampling ratio so it can be graphed over time.
 	samplingRatio prometheus.Gauge
+
+	// exporterInfo is a constant-value (1) gauge labelled by exporter protocol ("grpc", "http", "none")
+	// so dashboards can identify which export path is active without parsing log lines.
+	exporterInfo *prometheus.GaugeVec
 }
 
 // newTracerMetrics creates a fully initialised TracerMetrics backed by a private registry.
@@ -80,6 +84,12 @@ func newTracerMetrics() *TracerMetrics {
 			Name:      "sampling_ratio",
 			Help:      "Configured trace sampling ratio in [0, 1].",
 		}),
+		exporterInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "lynx",
+			Subsystem: "tracer",
+			Name:      "exporter_info",
+			Help:      "Constant 1 gauge labelled by the active exporter protocol (grpc, http, or none).",
+		}, []string{"protocol"}),
 	}
 
 	reg.MustRegister(
@@ -90,6 +100,7 @@ func newTracerMetrics() *TracerMetrics {
 		m.shutdownErrorsTotal,
 		m.healthChecksTotal,
 		m.samplingRatio,
+		m.exporterInfo,
 	)
 
 	return m
@@ -151,4 +162,20 @@ func (m *TracerMetrics) setSamplingRatio(ratio float32) {
 		return
 	}
 	m.samplingRatio.Set(float64(ratio))
+}
+
+// setExporterProtocol records which export path is active.
+// protocol must be one of "grpc", "http", or "none".
+// It resets the previous label so only the current protocol shows value 1.
+func (m *TracerMetrics) setExporterProtocol(protocol string) {
+	if m == nil {
+		return
+	}
+	for _, p := range []string{"grpc", "http", "none"} {
+		if p == protocol {
+			m.exporterInfo.WithLabelValues(p).Set(1)
+		} else {
+			m.exporterInfo.WithLabelValues(p).Set(0)
+		}
+	}
 }

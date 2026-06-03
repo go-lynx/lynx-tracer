@@ -230,7 +230,9 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 	}
 }
 
-// validateFilePath validates file path security to prevent path traversal attacks
+// validateFilePath checks filePath for path-traversal patterns and verifies the resolved
+// absolute path is accessible before it is passed to tls.LoadX509KeyPair or os.ReadFile.
+// It rejects empty paths, sequences containing ".." or "//", and non-existent files.
 func validateFilePath(filePath string) error {
 	if filePath == "" {
 		return fmt.Errorf("file path cannot be empty")
@@ -330,10 +332,13 @@ func buildTLSCredentials(cfg *conf.Config) (*otlptracegrpc.Option, error) {
 	return &opt, nil
 }
 
-// buildConnectionPoolServiceConfig builds a gRPC service config string for connection pool management.
+// buildConnectionPoolServiceConfig returns a gRPC service-config JSON string that applies
+// the connection-pool settings (maxConnIdleTime, maxConnAge, maxConnAgeGrace) from conn.
+// The returned string is suitable for use with grpc.WithDefaultServiceConfig.
 func buildConnectionPoolServiceConfig(conn *conf.Connection) string {
 	var serviceConfig strings.Builder
-	serviceConfig.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+	// "round_robin" is the correct policy name for the gRPC balancer registry.
+	serviceConfig.WriteString(`{"loadBalancingConfig": [{"round_robin": {}}]`)
 
 	// Add connection pool settings
 	if conn.GetMaxConnIdleTime() != nil {
@@ -353,21 +358,28 @@ func buildConnectionPoolServiceConfig(conn *conf.Connection) string {
 	return serviceConfig.String()
 }
 
-// buildLoadBalancingServiceConfig builds a gRPC service config string for load balancing.
+// buildLoadBalancingServiceConfig returns a gRPC service-config JSON string encoding the
+// load-balancing policy (round_robin, pick_first, or least_conn) and optional health-check
+// config from lb. Falls back to round_robin for unrecognized policies.
+//
+// Policy names follow the gRPC balancer-registry convention:
+//   - "round_robin" → {"round_robin": {}}
+//   - "pick_first"  → {"pick_first": {}}
+//   - "least_conn"  → {"least_conn": {}}
 func buildLoadBalancingServiceConfig(lb *conf.LoadBalancing) string {
 	var serviceConfig strings.Builder
 
-	// Build load balancing policy
+	// Build load balancing policy using gRPC's canonical snake_case policy names.
 	switch lb.GetPolicy() {
 	case "round_robin":
-		serviceConfig.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+		serviceConfig.WriteString(`{"loadBalancingConfig": [{"round_robin": {}}]`)
 	case "pick_first":
-		serviceConfig.WriteString(`{"loadBalancingConfig": [{"pickFirst": {}}]`)
+		serviceConfig.WriteString(`{"loadBalancingConfig": [{"pick_first": {}}]`)
 	case "least_conn":
-		serviceConfig.WriteString(`{"loadBalancingConfig": [{"leastConn": {}}]`)
+		serviceConfig.WriteString(`{"loadBalancingConfig": [{"least_conn": {}}]`)
 	default:
 		// Default to round_robin
-		serviceConfig.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+		serviceConfig.WriteString(`{"loadBalancingConfig": [{"round_robin": {}}]`)
 	}
 
 	// Add health checking if enabled
@@ -379,8 +391,9 @@ func buildLoadBalancingServiceConfig(lb *conf.LoadBalancing) string {
 	return serviceConfig.String()
 }
 
-// buildMergedGRPCServiceConfig builds a single gRPC service config merging load balancing and connection pool
-// so that one WithDefaultServiceConfig does not override the other (later dial option would win otherwise).
+// buildMergedGRPCServiceConfig returns a single gRPC service-config JSON that merges the
+// load-balancing policy and connection-pool settings from cfg.  Combining them in one JSON
+// prevents a later WithDefaultServiceConfig call from silently overriding the earlier one.
 func buildMergedGRPCServiceConfig(cfg *conf.Config) string {
 	conn := cfg.GetConnection()
 	hasPool := conn != nil && (conn.GetMaxConnIdleTime() != nil || conn.GetMaxConnAge() != nil || conn.GetMaxConnAgeGrace() != nil)
@@ -395,10 +408,12 @@ func buildMergedGRPCServiceConfig(cfg *conf.Config) string {
 	if hasPool {
 		return buildConnectionPoolServiceConfig(conn)
 	}
-	return `{"loadBalancingPolicy":"round_robin"}`
+	return `{"loadBalancingConfig": [{"round_robin": {}}]}`
 }
 
-// buildMergedGRPCServiceConfigFromScratch builds one JSON when both load balancing and connection pool are set.
+// buildMergedGRPCServiceConfigFromScratch builds a single gRPC service-config JSON that
+// encodes both load-balancing and connection-pool settings from cfg in one object, used when
+// both are present so neither setting silently shadows the other.
 func buildMergedGRPCServiceConfigFromScratch(cfg *conf.Config) string {
 	var b strings.Builder
 	lb := cfg.GetLoadBalancing()
@@ -406,19 +421,19 @@ func buildMergedGRPCServiceConfigFromScratch(cfg *conf.Config) string {
 	if lb != nil {
 		switch lb.GetPolicy() {
 		case "round_robin":
-			b.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+			b.WriteString(`{"loadBalancingConfig": [{"round_robin": {}}]`)
 		case "pick_first":
-			b.WriteString(`{"loadBalancingConfig": [{"pickFirst": {}}]`)
+			b.WriteString(`{"loadBalancingConfig": [{"pick_first": {}}]`)
 		case "least_conn":
-			b.WriteString(`{"loadBalancingConfig": [{"leastConn": {}}]`)
+			b.WriteString(`{"loadBalancingConfig": [{"least_conn": {}}]`)
 		default:
-			b.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+			b.WriteString(`{"loadBalancingConfig": [{"round_robin": {}}]`)
 		}
 		if lb.GetHealthCheck() {
 			b.WriteString(`,"healthCheckConfig": {"serviceName": "grpc.health.v1.Health"}`)
 		}
 	} else {
-		b.WriteString(`{"loadBalancingConfig": [{"roundRobin": {}}]`)
+		b.WriteString(`{"loadBalancingConfig": [{"round_robin": {}}]`)
 	}
 	if conn != nil {
 		if conn.GetMaxConnIdleTime() != nil {

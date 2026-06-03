@@ -10,6 +10,10 @@ const (
 	privateHealthResourceName    = "health"
 )
 
+// registerRuntimePluginAlias publishes the PlugTracer instance itself as a shared resource
+// under the canonical alias key (pluginName + ".plugin").  Other plugins that need a typed
+// handle to the tracer can look it up by that key.  The operation is idempotent: repeated
+// calls simply overwrite the previous value with the same pointer.
 func (t *PlugTracer) registerRuntimePluginAlias() {
 	if t == nil || t.rt == nil {
 		return
@@ -19,6 +23,11 @@ func (t *PlugTracer) registerRuntimePluginAlias() {
 	}
 }
 
+// publishRuntimeContract updates the shared and private readiness/health resources so the
+// rest of the application can observe the tracer's current lifecycle state without importing
+// this package.  Callers invoke it at every meaningful state transition (startup, ready,
+// shutdown).  The underlying RegisterSharedResource / RegisterPrivateResource calls are
+// idempotent: a second call with the same key overwrites the previous value.
 func (t *PlugTracer) publishRuntimeContract(ready, healthy bool) {
 	if t == nil || t.rt == nil {
 		return

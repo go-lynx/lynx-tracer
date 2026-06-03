@@ -351,6 +351,14 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 		if err := probeCollectorReachable(t.conf.Addr, 2*time.Second); err != nil {
 			log.Warnf("Tracer exporter target may be unreachable: %v (traces will still be generated)", err)
 		}
+		// Record which export path is active so dashboards can identify it without log parsing.
+		if t.conf.GetConfig() != nil && t.conf.GetConfig().GetProtocol() == conf.Protocol_OTLP_HTTP {
+			t.metrics.setExporterProtocol("http")
+		} else {
+			t.metrics.setExporterProtocol("grpc")
+		}
+	} else {
+		t.metrics.setExporterProtocol("none")
 	}
 
 	// Create a new trace provider for generating and processing trace data
@@ -365,12 +373,6 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 	// Propagators
 	t.propagator = buildPropagator(t.conf)
 	otel.SetTextMapPropagator(t.propagator)
-
-	// Verify that TracerProvider was successfully created
-	if tp == nil {
-		t.publishRuntimeContract(false, false)
-		return fmt.Errorf("failed to create tracer provider")
-	}
 
 	if t.rt != nil {
 		if err := t.rt.RegisterPrivateResource("tracer_provider", t.tp); err != nil {
@@ -429,6 +431,11 @@ func (t *PlugTracer) CleanupTasks() error {
 	return t.cleanupWithContext(context.Background())
 }
 
+// shutdownTimeout is the default total budget for graceful tracer shutdown (ForceFlush + Shutdown).
+// 60 s gives the batch processor enough time to drain a full queue of 2048 spans
+// before the framework's own stop deadline (typically 30 s) would otherwise expire.
+const shutdownTimeout = 60 * time.Second
+
 func (t *PlugTracer) cleanupWithContext(parentCtx context.Context) error {
 	if t.tp == nil {
 		t.publishRuntimeContract(false, false)
@@ -441,17 +448,33 @@ func (t *PlugTracer) cleanupWithContext(parentCtx context.Context) error {
 		return fmt.Errorf("tracer cleanup canceled before execution: %w", err)
 	}
 
+	// Ensure we always have a deadline so ForceFlush+Shutdown cannot block indefinitely.
+	// If the caller already imposed a tighter deadline we inherit it; otherwise we apply
+	// our own generous budget that covers draining a large span queue.
 	ctx := parentCtx
 	cancel := func() {}
 	if _, ok := parentCtx.Deadline(); !ok {
-		ctx, cancel = context.WithTimeout(parentCtx, 30*time.Second)
+		ctx, cancel = context.WithTimeout(parentCtx, shutdownTimeout)
 	}
 	defer cancel()
 
 	t.publishRuntimeContract(false, false)
-	if err := t.tp.ForceFlush(ctx); err != nil {
+
+	// ForceFlush gets at most half the remaining budget so Shutdown always has a chance
+	// to cleanly terminate the exporter connection even if the flush takes a long time.
+	flushCtx := ctx
+	flushCancel := func() {}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 2*time.Second {
+			flushCtx, flushCancel = context.WithTimeout(ctx, remaining/2)
+		}
+	}
+	if err := t.tp.ForceFlush(flushCtx); err != nil {
 		log.Errorf("Failed to force flush tracer provider: %v", err)
 	}
+	flushCancel()
+
 	if err := t.tp.Shutdown(ctx); err != nil {
 		log.Errorf("Failed to shutdown tracer provider: %v", err)
 		t.metrics.recordShutdown(err)
