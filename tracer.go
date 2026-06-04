@@ -36,12 +36,9 @@ const (
 	confPrefix = "lynx.tracer"
 )
 
-// PlugTracer implements the Tracer plugin functionality for Lynx framework.
-// It embeds plugins.BasePlugin to inherit common plugin functionality and maintains Tracer tracing configuration and instances.
+// PlugTracer manages the OpenTelemetry TracerProvider lifecycle and propagator installation.
 type PlugTracer struct {
-	// Embed base plugin, inheriting common plugin properties and methods
 	*plugins.BasePlugin
-	// Tracer configuration information (supports modular configuration and backward-compatible old fields)
 	conf *conf.Tracer
 	// Runtime handle for publishing lifecycle contract resources.
 	rt plugins.Runtime
@@ -54,7 +51,6 @@ type PlugTracer struct {
 }
 
 // NewPlugTracer creates a new Tracer plugin instance.
-// This function initializes the plugin's basic information (ID, name, description, version, configuration prefix, weight) and returns the instance.
 func NewPlugTracer() *PlugTracer {
 	return &PlugTracer{
 		BasePlugin: plugins.NewBasePlugin(
@@ -70,10 +66,8 @@ func NewPlugTracer() *PlugTracer {
 	}
 }
 
-// InitializeResources loads and validates Tracer configuration from runtime, while filling default values.
-// - First scan "lynx.tracer" from runtime configuration tree to t.conf
-// - Validate necessary parameters (sampling ratio range, enabled but unconfigured address, etc.)
-// - Set reasonable default values (addr, ratio)
+// InitializeResources scans the "lynx.tracer" config subtree, validates the
+// sampling ratio and OTLP endpoint, and applies defaults.
 func (t *PlugTracer) InitializeResources(rt plugins.Runtime) error {
 	if err := t.BasePlugin.InitializeResources(rt); err != nil {
 		return err
