@@ -62,16 +62,11 @@ func validateAddress(addr string) error {
 // - useBatch: Whether batch processing is enabled (based on config.batch.enabled)
 // - err: Error when initialization fails
 func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExporter, batchOpts []traceSdk.BatchSpanProcessorOption, useBatch bool, err error) {
-	// Get Tracer configuration
 	cfg := c.GetConfig()
-
-	// Handle case when config is nil
 	if cfg == nil {
-		// Use default configuration when config is nil
 		cfg = &conf.Config{}
 	}
 
-	// Validate address format
 	if addrErr := validateAddress(c.Addr); addrErr != nil {
 		return nil, nil, false, fmt.Errorf("address validation failed: %w", addrErr)
 	}
@@ -104,31 +99,28 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 	case conf.Protocol_OTLP_HTTP:
 		// OTLP over HTTP
 		opts := []otlptracehttp.Option{}
-		// Target address: Collector's HTTP endpoint (usually host:4318), no need to include protocol
+		// Endpoint is the Collector's HTTP address (typically host:4318), without scheme.
 		if c.Addr != "" {
 			opts = append(opts, otlptracehttp.WithEndpoint(c.Addr))
 		}
-		// Plaintext HTTP: set to Insecure to use http (otherwise defaults to https)
+		// WithInsecure selects plaintext http; the SDK otherwise defaults to https.
 		if cfg.GetInsecure() {
 			opts = append(opts, otlptracehttp.WithInsecure())
 		}
-		// Custom URL path: default /v1/traces, can be specified via http_path
+		// http_path overrides the default /v1/traces path.
 		if hp := cfg.GetHttpPath(); hp != "" {
 			opts = append(opts, otlptracehttp.WithURLPath(hp))
 		}
-		// Additional request headers: commonly used for authentication (e.g., Authorization: Bearer <token>)
+		// Headers commonly carry auth (e.g. Authorization: Bearer <token>).
 		if hdrs := cfg.GetHeaders(); len(hdrs) > 0 {
 			opts = append(opts, otlptracehttp.WithHeaders(hdrs))
 		}
-		// Timeout
 		if to := cfg.GetTimeout(); to != nil {
 			opts = append(opts, otlptracehttp.WithTimeout(to.AsDuration()))
 		}
-		// Compression (gzip)
 		if cfg.GetCompression() == conf.Compression_COMPRESSION_GZIP {
 			opts = append(opts, otlptracehttp.WithCompression(otlptracehttp.GzipCompression))
 		}
-		// Initialize HTTP exporter
 		exp, err = otlptracehttp.New(ctx, opts...)
 		if err != nil {
 			return nil, nil, false, fmt.Errorf("failed to create OTLP HTTP exporter: %w", err)
@@ -138,36 +130,30 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 	default:
 		// Default to gRPC
 		opts := []otlptracegrpc.Option{}
-		// Target address: Collector's gRPC endpoint (usually host:4317)
+		// Endpoint is the Collector's gRPC address (typically host:4317).
 		if c.Addr != "" {
 			opts = append(opts, otlptracegrpc.WithEndpoint(c.Addr))
 		}
 
-		// TLS / Insecure
-		// Plaintext gRPC: do not enable TLS
+		// Insecure means plaintext gRPC; otherwise build TLS credentials and fail fast on misconfiguration.
 		if cfg.GetInsecure() {
 			opts = append(opts, otlptracegrpc.WithInsecure())
-			// Otherwise load credentials based on TLS configuration; return error directly if configuration is incorrect
 		} else if tlsOpt, tlsErr := buildTLSCredentials(cfg); tlsErr == nil && tlsOpt != nil {
 			opts = append(opts, *tlsOpt)
 		} else if tlsErr != nil {
 			return nil, nil, false, fmt.Errorf("failed to build TLS credentials: %w", tlsErr)
 		}
 
-		// Headers
-		// Additional gRPC Metadata: e.g., authentication headers, tenant information, etc.
+		// Headers carry gRPC metadata such as auth or tenant info.
 		if hdrs := cfg.GetHeaders(); len(hdrs) > 0 {
 			opts = append(opts, otlptracegrpc.WithHeaders(hdrs))
 		}
 
-		// Timeout
-		// Request timeout within exporter
 		if to := cfg.GetTimeout(); to != nil {
 			opts = append(opts, otlptracegrpc.WithTimeout(to.AsDuration()))
 		}
 
-		// Retry
-		// gRPC retry strategy: supports initial/max backoff intervals; maximum retry time is used to approximate limit on maximum retry attempts
+		// Retry: the SDK takes initial/max backoff; max_attempts is approximated via MaxElapsedTime below.
 		if r := cfg.GetRetry(); r != nil {
 			rc := otlptracegrpc.RetryConfig{Enabled: r.GetEnabled()}
 			if ii := r.GetInitialInterval(); ii != nil {
@@ -176,9 +162,9 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 			if mi := r.GetMaxInterval(); mi != nil {
 				rc.MaxInterval = mi.AsDuration()
 			}
-			// Approximately map max_attempts to maximum retry duration (MaxElapsedTime) to limit total retry attempts
+			// The SDK has no max-attempts knob, so approximate it as max_attempts * per-wait
+			// upper bound (MaxInterval, else InitialInterval, else 5s) via MaxElapsedTime.
 			if ma := r.GetMaxAttempts(); ma > 0 {
-				// Prefer to use MaxInterval as upper bound for each wait; if not set, fall back to InitialInterval; then fall back to 5s
 				chosen := rc.MaxInterval
 				if chosen == 0 {
 					chosen = rc.InitialInterval
@@ -205,8 +191,7 @@ func buildExporter(ctx context.Context, c *conf.Tracer) (exp traceSdk.SpanExport
 			opts = append(opts, otlptracegrpc.WithDialOption(grpc.WithDefaultServiceConfig(mergedServiceConfig)))
 		}
 
-		// Compression (gzip)
-		// gRPC compression: can be enabled to reduce bandwidth when Collector supports gzip
+		// gzip reduces bandwidth when the Collector supports it.
 		if cfg.GetCompression() == conf.Compression_COMPRESSION_GZIP {
 			opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
 		}
@@ -264,7 +249,6 @@ func validateFilePath(filePath string) error {
 // - InsecureSkipVerify: whether to skip server certificate verification
 // Returns the option corresponding to otlptracegrpc.WithTLSCredentials; returns (nil, nil) if TLS is not configured.
 func buildTLSCredentials(cfg *conf.Config) (*otlptracegrpc.Option, error) {
-	// Get TLS configuration
 	tlsCfg := cfg.GetTls()
 	if tlsCfg == nil {
 		return nil, nil
@@ -273,8 +257,7 @@ func buildTLSCredentials(cfg *conf.Config) (*otlptracegrpc.Option, error) {
 		return nil, err
 	}
 
-	// CA
-	// If ca_file is provided, load root certificate to RootCAs; used to verify server certificate
+	// ca_file, when set, supplies the RootCAs used to verify the server certificate.
 	var rootCAs *x509.CertPool
 	if tlsCfg.GetCaFile() != "" {
 		// Validate and sanitize file path
@@ -293,11 +276,9 @@ func buildTLSCredentials(cfg *conf.Config) (*otlptracegrpc.Option, error) {
 		}
 	}
 
-	// Client cert
-	// If both cert_file and key_file are provided, enable mTLS client certificate
+	// cert_file + key_file together enable mTLS; supplying only one is an error.
 	var certs []tls.Certificate
 	if tlsCfg.GetCertFile() != "" && tlsCfg.GetKeyFile() != "" {
-		// Validate and sanitize file paths
 		certFilePath := tlsCfg.GetCertFile()
 		keyFilePath := tlsCfg.GetKeyFile()
 

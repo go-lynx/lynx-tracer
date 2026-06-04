@@ -30,23 +30,20 @@ func buildResource(c *conf.Tracer) *resource.Resource {
 		}
 	}
 
-	// service.name: prefer config override, with validation
+	// service.name: prefer the config override, falling back to the Lynx app name.
 	serviceName := currentLynxName()
 	if r != nil && r.GetServiceName() != "" {
 		serviceName = r.GetServiceName()
 	}
-
-	// Validate service name is not empty
 	if serviceName == "" {
-		serviceName = "unknown-service" // Provide a fallback service name
+		serviceName = "unknown-service"
 	}
 
 	attrs = append(attrs, semconv.ServiceNameKey.String(serviceName))
 
-	// extra attributes
 	if r != nil {
 		for k, v := range r.GetAttributes() {
-			// Validate attribute key and value
+			// Skip empty keys/values so they don't pollute the resource.
 			if k != "" && v != "" {
 				attrs = append(attrs, attribute.String(k, v))
 			}

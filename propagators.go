@@ -20,10 +20,9 @@ import (
 // - B3_MULTI: B3 multiple headers (x-b3-traceid / x-b3-spanid / x-b3-sampled ...).
 // - JAEGER: Jaeger (uber-trace-id).
 func buildPropagator(c *conf.Tracer) propagation.TextMapPropagator {
-	// Read plugin configuration (may be nil)
 	cfg := c.GetConfig()
 	if cfg == nil || len(cfg.GetPropagators()) == 0 {
-		// Safe default when no configuration: W3C tracecontext + baggage
+		// Safe default when nothing is configured: W3C tracecontext + baggage.
 		return propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{},
 			propagation.Baggage{},
@@ -31,7 +30,6 @@ func buildPropagator(c *conf.Tracer) propagation.TextMapPropagator {
 	}
 
 	var list []propagation.TextMapPropagator
-	// Parse configured propagators one by one and add to combination
 	for _, p := range cfg.GetPropagators() {
 		switch p {
 		case conf.Propagator_W3C_TRACE_CONTEXT:

@@ -14,58 +14,40 @@ import (
 // Fallback strategy:
 // - When config.sampler is not configured or type is not specified, use the outer legacy ratio field, default ParentBased(TraceIDRatioBased(ratio)).
 func buildSampler(c *conf.Tracer) traceSdk.Sampler {
-	// Get Tracer configuration
 	cfg := c.GetConfig()
 
-	// If configuration is empty or sampler configuration is empty or type is not specified, use default configuration
+	// No modular sampler configured: fall back to the legacy top-level ratio for backward
+	// compatibility, wrapped in ParentBased so child spans honor the parent's sampling decision.
 	if cfg == nil || cfg.Sampler == nil || cfg.Sampler.Type == conf.Sampler_SAMPLER_UNSPECIFIED {
-		// Default: ParentBased + TraceIDRatio using outer ratio (backward compatibility)
-		ratio := c.GetRatio()
-		// Ensure ratio is within valid range with proper floating-point handling
-		ratio = clampRatio(ratio)
+		ratio := clampRatio(c.GetRatio())
 		return traceSdk.ParentBased(traceSdk.TraceIDRatioBased(float64(ratio)))
 	}
 
-	// Get sampler configuration
 	s := cfg.GetSampler()
 
-	// Build sampler based on sampler type
 	switch s.GetType() {
 	case conf.Sampler_ALWAYS_ON:
-		// Always sample
 		return traceSdk.AlwaysSample()
 
 	case conf.Sampler_ALWAYS_OFF:
-		// Never sample
 		return traceSdk.NeverSample()
 
 	case conf.Sampler_TRACEID_RATIO:
-		// Sample by ratio
 		r := s.GetRatio()
 		if !isValidRatio(r) {
-			// If ratio is invalid, use outer ratio as fallback
-			r = c.GetRatio()
-			// Ensure fallback ratio is also valid
-			r = clampRatio(r)
+			r = clampRatio(c.GetRatio()) // fall back to the legacy ratio when the sampler ratio is out of range
 		}
 		return traceSdk.TraceIDRatioBased(float64(r))
 
 	case conf.Sampler_PARENT_BASED_TRACEID_RATIO:
-		// Parent-based ratio sampling
 		r := s.GetRatio()
 		if !isValidRatio(r) {
-			// If ratio is invalid, use outer ratio as fallback
-			r = c.GetRatio()
-			// Ensure fallback ratio is also valid
-			r = clampRatio(r)
+			r = clampRatio(c.GetRatio())
 		}
 		return traceSdk.ParentBased(traceSdk.TraceIDRatioBased(float64(r)))
 
 	default:
-		// Default to ParentBased + TraceIDRatio with validated ratio
-		ratio := c.GetRatio()
-		// Ensure ratio is within valid range
-		ratio = clampRatio(ratio)
+		ratio := clampRatio(c.GetRatio())
 		return traceSdk.ParentBased(traceSdk.TraceIDRatioBased(float64(ratio)))
 	}
 }

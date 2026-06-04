@@ -58,18 +58,12 @@ type PlugTracer struct {
 func NewPlugTracer() *PlugTracer {
 	return &PlugTracer{
 		BasePlugin: plugins.NewBasePlugin(
-			// Generate unique plugin ID
 			plugins.GeneratePluginID("", pluginName, pluginVersion),
-			// Plugin name
 			pluginName,
-			// Plugin description
 			pluginDescription,
-			// Plugin version
 			pluginVersion,
-			// Configuration prefix
 			confPrefix,
-			// Weight
-			9999,
+			9999, // load weight; high so tracing initializes before most plugins
 		),
 		conf:    &conf.Tracer{},
 		metrics: newTracerMetrics(),
@@ -85,21 +79,17 @@ func (t *PlugTracer) InitializeResources(rt plugins.Runtime) error {
 		return err
 	}
 	t.rt = rt
-	// Initialize an empty configuration structure
 	t.conf = &conf.Tracer{}
 
-	// Scan and load Tracer configuration from runtime configuration
 	err := rt.GetConfig().Value(confPrefix).Scan(t.conf)
 	if err != nil {
 		return fmt.Errorf("failed to load tracer configuration: %w", err)
 	}
 
-	// Validate configuration
 	if err := t.validateConfiguration(); err != nil {
 		return fmt.Errorf("tracer configuration validation failed: %w", err)
 	}
 
-	// Set default values
 	t.setDefaultValues()
 
 	return nil
@@ -313,7 +303,6 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 	}
 	t.publishRuntimeContract(false, false)
 
-	// Use Lynx application Helper to log, indicating that tracing component is being initialized
 	log.Infof("Initializing tracing component")
 
 	var tracerProviderOptions []trace.TracerProviderOption
@@ -333,8 +322,7 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 
 	t.metrics.setSamplingRatio(t.conf.GetRatio())
 
-	// If address is specified in configuration, set exporter
-	// Otherwise, don't set exporter
+	// The special addr "None" means trace-context propagation only, with no exporter.
 	if t.conf.GetAddr() != "None" {
 		exp, batchOpts, useBatch, err := buildExporter(ctx, t.conf)
 		if err != nil {
@@ -361,16 +349,13 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 		t.metrics.setExporterProtocol("none")
 	}
 
-	// Create a new trace provider for generating and processing trace data
 	tp := trace.NewTracerProvider(tracerProviderOptions...)
-
-	// Set global trace provider for subsequent trace data generation and processing
 	otel.SetTracerProvider(tp)
 
 	// Hold our own reference so CleanupTasks always shuts down this provider, not a replacement
+	// installed later by other code via SetTracerProvider.
 	t.tp = tp
 
-	// Propagators
 	t.propagator = buildPropagator(t.conf)
 	otel.SetTextMapPropagator(t.propagator)
 
@@ -396,7 +381,6 @@ func (t *PlugTracer) startupWithContext(ctx context.Context) error {
 	t.metrics.setInitialized(true)
 	t.metrics.recordStartup(nil)
 
-	// Use Lynx application Helper to log, indicating that tracing component initialization was successful
 	log.Infof("Tracing component successfully initialized")
 	return nil
 }
