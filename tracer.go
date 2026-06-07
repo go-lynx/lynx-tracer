@@ -27,7 +27,7 @@ const (
 	pluginName = "tracer.server"
 
 	// pluginVersion represents the current version of Tracer plugin.
-	pluginVersion = "v1.6.1"
+	pluginVersion = "v1.6.3"
 
 	// pluginDescription briefly describes the purpose of Tracer plugin.
 	pluginDescription = "OpenTelemetry tracer plugin for Lynx framework"
